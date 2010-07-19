@@ -7,11 +7,14 @@ class IRC
   attr_accessor :config, :handlers, :servers
   config_accessor :nick, :ident, :realname
 
-  def initialize(&block)
-    @config = ConfigDSL.run(&block)
+  def initialize(hash=nil, &block)
+    hash.merge!({:servers => {}}) if hash
+    @config = hash ? Struct.new(*hash.keys).new(*hash.values) : ConfigDSL.run(&block)
     @servers = {}
-    @config.servers.each do |server_id, server_conf|
-      @servers[server_id] = Server.new(self, server_id, server_conf)
+    unless hash and hash[:servers].nil?
+      @config.servers.each do |server_id, server_conf|
+        @servers[server_id] = Server.new(self, server_id, server_conf)
+      end
     end
     @handlers = {}
   end
