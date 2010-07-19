@@ -1,6 +1,6 @@
 class IRC
   class Server
-    attr_accessor :config, :connection, :handlers, :name, :irc
+    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick
     config_accessor :address, :port, :nick, :ident, :realname, :ssl
 
     def initialize(irc, name, config)
@@ -8,6 +8,16 @@ class IRC
       @name = name
       @config = config
       @handlers = {}
+      @connected = false
+      @current_nick = config.nick || irc.nick
+    end
+
+    def connected?
+      @connected
+    end
+
+    def channel
+      @config.channel
     end
 
     def send_cmd(cmd, *args)
@@ -37,6 +47,15 @@ class IRC
       elsif @irc.handlers[event.command]
         @irc.handlers[event.command].call(@irc, event)
       end
+
+      case event.command
+        when :'001'
+          @connected = true
+          @irc.handlers[:connected].call(@irc, event) if @irc.handlers[:connected]
+        when :ping
+          send_cmd :pong, event.params[0]
+      end
+
     end
 
     # Eventmachine callbacks
@@ -49,6 +68,7 @@ class IRC
     end
 
     def unbind
+      @connected = false
       EM.add_timer(3) do
         connection.reconnect(config.address, config.port)
         connection.post_init
