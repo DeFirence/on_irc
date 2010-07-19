@@ -31,10 +31,10 @@ class IRC
     end
   end
   
-  ServerConfig = Struct.new(:address, :port, :nick, :ident, :realname, :ssl)
+  ServerConfig = Struct.new(:address, :port, :nick, :ident, :realname, :ssl, :channel)
   
   class ServerConfigDSL
-    dsl_accessor :address, :port, :nick, :ident, :realname
+    dsl_accessor :address, :port, :nick, :ident, :realname, :channel
     bool_dsl_accessor :ssl
 
     def self.run(&block)
@@ -52,6 +52,7 @@ class IRC
       conf.nick = confdsl.nick
       conf.ident = confdsl.ident
       conf.realname = confdsl.realname
+      conf.channel = confdsl.channel
 
       conf
     end
