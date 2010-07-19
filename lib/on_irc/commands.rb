@@ -21,5 +21,9 @@ class IRC
     def pong(msg)
       send_cmd(:pong, msg)
     end
+
+    def mode(target, *mode_and_targets)
+      send_cmd(:mode, target, mode_and_targets.join(" "))
+    end
   end
 end
