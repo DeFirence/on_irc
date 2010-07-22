@@ -1,15 +1,16 @@
 class IRC
   class Sender
-    attr_accessor :nick, :user, :host
+    attr_accessor :nick, :username, :host, :user
 
     def initialize(string)
       if string =~ /^([^!]+)!([^@]+)@(.+)$/
-        @nick, @user, @host = $1, $2, $3
+        @nick, @username, @host = $1, $2, $3
         @server = false
       else
         @host = string
         @server = true
       end
+      @user = nil
     end
 
     def server?
@@ -21,7 +22,7 @@ class IRC
     end
 
     def to_s
-      @server ? @host : @nick + '!' + @user + '@' + @host
+      @server ? @host : @nick + '!' + @username + '@' + @host
     end
 
     def empty?

@@ -25,8 +25,11 @@ class IRC
           params << msg.scan(/\S+/)
         end
       end
+
+      target = params[0]
+      params.slice! 0
       
-      {:prefix => prefix, :command => command, :params => params}
+      {:prefix => prefix, :command => command, :target => target, :params => params}
     end
   end
 end

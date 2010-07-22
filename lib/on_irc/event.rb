@@ -1,11 +1,14 @@
 class IRC
   class Event
-    attr_accessor :server, :sender, :command, :params
+    attr_accessor :server, :sender, :command, :params, :target, :channel
 
-    def initialize(server, prefix, command, params)
+    def initialize(server, prefix, command, target, params)
       @server = server
       @sender = Sender.new(prefix)
+      @sender.user = server.user[@sender.nick] if server.users.include? @sender.nick
       @command = command
+      @target = target
+      @channel = target if target and target[0] == 35
       @params = params
     end
 
