@@ -32,6 +32,14 @@ class IRC
         @event.server
       end
 
+      def target
+        @event.target
+      end
+
+      def channel
+        @event.channel
+      end
+
       def params
         @event.params
       end
@@ -43,13 +51,18 @@ class IRC
         @event.server.send_cmd(cmd, *args)
       end
 
-      def respond(message)
+      def respond(*args)
+        type = args.first if args.length > 1
+        message = args.length > 1 ? args[1] : args.first
+
         if params[0].start_with? '#'
-          privmsg(params[0], message)
+          reply_cmd = type || @event.server.config.channel_reply_command || :privmsg
+          send(reply_cmd, reply_cmd == :notice ? sender.nick : params[0], message)
         else
-          privmsg(sender.nick, message)
+          send(@event.command == :notice ? :notice : :privmsg, sender.nick, message)
         end
       end
+      alias send_reply respond
     end
   end
 end
