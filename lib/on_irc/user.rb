@@ -22,14 +22,25 @@ class IRC
       end
     end
 
+    class UsersHash < DowncasedHash
+      def [](key)
+        return super(key) unless key[0] == 35
+        values.find_all { |usr| usr.channel && usr.channel.downcase == key.downcase }
+      end
+
+      def include?(nick)
+        values.include? nick
+      end
+    end
+
     @@users = DowncasedHash[]
 
     class << self # Class methods
-      def [](server, channel=nil, nickname=nil)
+      def [](server, channel_or_nick=nil)
         @@users[server] ||= DowncasedHash[]
-        return DowncasedHash[*@@users[server].values.collect {|h| h.to_a}.flatten] unless channel
-        return @@users[server][channel].values unless nickname
-        @@users[server][channel][nickname]
+        return @@users[server][channel_or_nick] if channel_or_nick and channel_or_nick[0] == 35
+        return UsersHash[*@@users[server].values.collect {|h| h.to_a}.flatten] unless channel_or_nick
+        UsersHash[*@@users[server].values.collect {|h| h.to_a}.flatten][channel_or_nick]
       end
 
       def remove(server, channel, nickname)
@@ -42,7 +53,7 @@ class IRC
       end
     end
 
-    attr_accessor :server, :nickname
+    attr_accessor :server, :nickname, :channel
     attr_reader :join_time
     
     def initialize(server, channel, nickname)
@@ -52,7 +63,7 @@ class IRC
       @join_time = Time.now
       @attributes = {}
       @@users[@server] ||= DowncasedHash[]
-      @@users[@server][@channel] ||= DowncasedHash[]
+      @@users[@server][@channel] ||= UsersHash[]
       @@users[@server][@channel][@nickname] = self
     end
 
