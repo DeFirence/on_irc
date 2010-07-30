@@ -55,7 +55,7 @@ class IRC
         type = args.first if args.length > 1
         message = args.length > 1 ? args[1] : args.first
 
-        if params[0].start_with? '#'
+        if channel
           reply_cmd = type || @event.server.config.channel_reply_command || :privmsg
           send(reply_cmd, reply_cmd == :notice ? sender.nick : params[0], message)
         else
