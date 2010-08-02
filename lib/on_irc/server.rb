@@ -37,6 +37,7 @@ class IRC
       # prepend last arg with : only if it exists. it's really ugly
       args[-1] = ":#{args[-1]}" if args[-1]
       connection.send_data(cmd.to_s.upcase + ' ' + args.join(' ') + "\r\n")
+      puts "#{@name} <- #{cmd.to_s.upcase} #{args.join(' ')}"
     end
 
     # basic IRC commands
@@ -90,11 +91,14 @@ class IRC
           @connect_time = Time.now
           @irc.handlers[:connected].call(@irc, event) if @irc.handlers[:connected]
         when :'315'
+          p event if event.params[0].nil? #debug
           @channels[event.params[0]][:synced] = true if event.params[0][0] == 35
         when :'352' # who reply
           if name == :ShadowFire #TODO: replace hardcoded server name with IRCd check
             channel, username, hostname, server_address, nick, modes, realname = event.params
             if usr = user[nick]
+              usr.ident      = username
+              usr.hostname   = hostname
               usr.identified = modes.include? 'r'
               puts "User[#{nick.inspect}] identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
               usr.who_request_timer.cancel if usr.who_request_timer
@@ -114,7 +118,7 @@ class IRC
               User.new @name, event.params[1], nick
               User[@name, nick].identified_check_count = 0
             else
-              User[@name, nick].channels << channel.downcase
+              User[@name, nick].channels << event.params[1].downcase
             end
           end
         when :'366' # end of names
