@@ -2,7 +2,7 @@ require File.join(File.dirname(__FILE__), '/user')
 
 class IRC
   class Server
-    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who
+    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans
     config_accessor :address, :port, :nick, :ident, :realname, :ssl
 
     def initialize(irc, name, config)
@@ -29,6 +29,10 @@ class IRC
 
     def users(channel=nil)
       User[@name, channel]
+    end
+
+    def bans(channel)
+      @channels[channel][:bans]
     end
 
     def send_cmd(cmd, *args)
@@ -123,11 +127,18 @@ class IRC
           end
         when :'366' # end of names
           request_who event.params[0]
+        when :'367' # channel ban list entry
+          @channels[event.params[0]][:bans][event.params[1]] = event.params[2]
+        when :mode
+          if event.params[0] == '+b' #TODO: parse modes properly
+            @channels[event.channel][:bans][event.params[1]] = event.sender.nick
+          end
         when :ping
           send_cmd :pong, event.target
         when :join
           if event.sender.nick == current_nick
-            @channels[event.channel] = { :synced => false }
+            @channels[event.channel] = { :synced => false, :bans => {} }
+            send_cmd(:mode, event.channel, '+b')
           else
             unless User[@name].include? event.sender.nick
               User.new @name, event.channel, event.sender.nick
