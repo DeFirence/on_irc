@@ -2,7 +2,7 @@ require File.join(File.dirname(__FILE__), '/user')
 
 class IRC
   class Server
-    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans
+    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans, :supported
     config_accessor :address, :port, :nick, :ident, :realname, :ssl
 
     def initialize(irc, name, config)
@@ -13,6 +13,7 @@ class IRC
       @connected = false
       @current_nick = config.nick || irc.nick
       @channels = DowncasedHash[]
+      @supported = {}
     end
 
     def connected?
@@ -94,6 +95,23 @@ class IRC
           @connected = true
           @connect_time = Time.now
           @irc.handlers[:connected].call(@irc, event) if @irc.handlers[:connected]
+        when :'005' # supported modes
+          @supported[:chanmodes] ||= {}
+          event.params[0..-2].collect {|p| s = p.split('='); [s[0], s[1] || true]}.each do |param, value|
+            case param.downcase.to_sym
+              when :cmds
+                @supported[:commands] = value.split(',')
+              when :chanmodes
+                @supported[:chanmodes].merge! Hash[[:address, :param, :set_param, :no_param].zip(value.split(','))]
+              when :prefix
+                if value =~ /([^()]+)\)(.+)/
+                  @supported[:prefixes] = Hash[*$2.chars.to_a.zip($1.chars.to_a).flatten]
+                  @supported[:chanmodes][:prefix] = $1
+                end
+              else
+                @supported[param.downcase.to_sym] = Float(value) rescue value
+            end
+          end
         when :'315'
           p event if event.params[0].nil? #debug
           @channels[event.params[0]][:synced] = true if event.params[0][0] == 35
@@ -130,8 +148,26 @@ class IRC
         when :'367' # channel ban list entry
           @channels[event.params[0]][:bans][event.params[1]] = event.params[2]
         when :mode
-          if event.params[0] == '+b' #TODO: parse modes properly
-            @channels[event.channel][:bans][event.params[1]] = event.sender.nick
+          if event.channel
+            params = event.params.dup
+            direction, added = nil, nil
+            params.shift.chars.each do |mode|
+              if '+-'.include? mode
+                added = mode == '+'
+              else
+                param_modes = @supported[:chanmodes].values_at(:address, :param, :prefix).join
+                param_modes << @supported[:chanmodes][:set_param] if direction == 0
+                param = param_modes.include?(mode) ? params.shift : nil
+                case mode.to_sym
+                  when :b
+                    if added
+                      @channels[event.channel][:bans][param] = event.sender.nick
+                    else
+                      @channels[event.channel][:bans].delete(param)
+                    end
+                end
+              end
+            end
           end
         when :ping
           send_cmd :pong, event.target
@@ -189,6 +225,8 @@ class IRC
     def unbind
       User.clear @name
       @connected = false
+      @supported = {}
+      @channels = DowncasedHash[]
       EM.add_timer(3) do
         connection.reconnect(config.address, config.port)
         connection.post_init
