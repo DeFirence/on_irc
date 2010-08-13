@@ -147,6 +147,9 @@ class IRC
           request_who event.params[0]
         when :'367' # channel ban list entry
           @channels[event.params[0]][:bans][event.params[1]] = event.params[2]
+        when :'433' # nickname in use
+          @current_nick += '_'
+          send_cmd :nick, @current_nick
         when :mode
           if event.channel
             params = event.params.dup
@@ -180,7 +183,7 @@ class IRC
               User.new @name, event.channel, event.sender.nick
               User[@name, event.sender.nick].identified_check_count = 0
             else
-              User[@name, event.sender.nick].channels << channel.downcase
+              User[@name, event.sender.nick].channels << event.channel.downcase
             end
             EM.add_timer(0.5) { request_who(event.sender.nick) }
           end
@@ -189,6 +192,9 @@ class IRC
           User.clear @name, event.channel if event.sender.nick == current_nick
         when :quit
           User.remove @name, event.sender.nick
+        when :kick
+          User.remove @name, event.channel, event.params.first
+          User.clear @name, event.channel if event.params.first == current_nick
         when :nick
           if event.sender.nick == current_nick
             current_nick = event.target
@@ -215,7 +221,6 @@ class IRC
     # Eventmachine callbacks
     def receive_line(line)
       parsed_line = Parser.parse(line)
-      #puts parsed_line.inspect
       event = Event.new(self, parsed_line[:prefix],
                         parsed_line[:command].downcase.to_sym,
                         parsed_line[:target], parsed_line[:params])
@@ -228,6 +233,9 @@ class IRC
       @supported = {}
       @channels = DowncasedHash[]
       EM.add_timer(3) do
+        if handler = @handlers[:pre_reconnect] || @irc.handlers[:pre_reconnect]
+          handler.call(@irc, Event.new(self, nil, :pre_reconnect, nil, []))
+        end
         connection.reconnect(config.address, config.port)
         connection.post_init
       end
