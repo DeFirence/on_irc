@@ -135,7 +135,7 @@ class IRC
           end
         when :'353' # names
           event.params[2].split(" ").each do |nick|
-            nick.slice!(0) if [:~, :&, :'@', :%, :+].include? nick[0].to_sym
+            nick.slice!(0) if [:~, :&, :'@', :%, :+].include? nick[0, 1].to_sym
             unless User[@name].include? nick
               User.new @name, event.params[1], nick
               User[@name, nick].identified_check_count = 0
@@ -232,13 +232,17 @@ class IRC
       @connected = false
       @supported = {}
       @channels = DowncasedHash[]
-      EM.add_timer(3) do
+      reconnect_after_3_seconds = lambda {
+        EM.add_timer(3) { reconnect.call }
+      }
+      reconnect = lambda {
         if handler = @handlers[:pre_reconnect] || @irc.handlers[:pre_reconnect]
           handler.call(@irc, Event.new(self, nil, :pre_reconnect, nil, []))
         end
-        connection.reconnect(config.address, config.port)
+        connection.reconnect(config.address, config.port) rescue return reconnect_after_3_seconds
         connection.post_init
-      end
+      }
+      reconnect_after_3_seconds
     end
   end
 end
