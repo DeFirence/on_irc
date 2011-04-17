@@ -2,7 +2,7 @@ require File.join(File.dirname(__FILE__), '/user')
 
 class IRC
   class Server
-    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans, :supported
+    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans, :supported, :channels
     config_accessor :address, :port, :nick, :ident, :realname, :ssl
 
     def initialize(irc, name, config)
@@ -14,6 +14,7 @@ class IRC
       @current_nick = config.nick || irc.nick
       @channels = DowncasedHash[]
       @supported = {}
+      @who_requests = 0
     end
 
     def connected?
@@ -55,32 +56,46 @@ class IRC
     def on_identified_update(nick, &block)
       if block
         puts "[on_identified_update] added handler for nick: #{nick}"
-        User[@name, nick].handlers[:identified] = block
+        user[nick].handlers[:identified] = block
         return
       end
+      @who_requests -= 1
       if @handlers[:identified_update] or @irc.handlers[:identified_update]
         event = Event.new(self, "#{nick}!ident@internal", :identified_update, nick, [])
         (@handlers[:identified_update] || @irc.handlers[:identified_update]).call(@irc, event)
       end
-      if User[@name, nick].handlers[:identified]
+      if user[nick].handlers[:identified]
         puts "[on_identified_update] called handler for nick: #{nick}"
-        User[@name, nick].handlers.delete(:identified).call(User[@name, nick])
+        user[nick].handlers.delete(:identified).call(user[nick])
       end
     end
 
     def request_who(nick_or_channel)
-      if nick_or_channel[0] != 35 and not (usr = user[nick_or_channel])
+      if nick_or_channel[0, 1] != '#' and not (usr = user[nick_or_channel])
         return puts "[request_who] skipping request for #{nick_or_channel.inspect}"
       end
+      if usr
+        if usr.who_request_timer
+          usr.who_request_timer.cancel                            #TODO: when too many who_requests are queued (possible netsplit rejoin)
+          usr.who_request_timer = nil                             #      stop individual requests and make a channel who request while
+        end                                                       #      preserving individual user callbacks
+        if @who_requests >= 5
+          puts "[request_who] too many requests in progress, delaying who for #{nick_or_channel.inspect} by 5 seconds"
+          return usr.who_request_timer = EventMachine::Timer.new(5) { request_who(nick_or_channel) }
+        end
+      end
       send_cmd :who, nick_or_channel
-      return if nick_or_channel[0] == 35
+      @who_requests += 1
+      return if nick_or_channel[0, 1] == '#'
       usr.identified_check_count += 1
       usr.who_request_timer = EventMachine::Timer.new(7) do
         puts "[request_who] timed out waiting for reply to who for #{nick_or_channel.inspect}"
         unless usr = user[nick_or_channel]
+          @who_requests -= 1
           puts "[request_who_timeout] skipping handling because #{nick_or_channel.inspect} no longer exists"
           next
         end
+        @who_requests -= 1
         if usr.identified_check_count < 4
           request_who(nick_or_channel)
         else
@@ -113,8 +128,12 @@ class IRC
             end
           end
         when :'315'
-          p event if event.params[0].nil? #debug
-          @channels[event.params[0]][:synced] = true if event.params[0][0] == 35
+          unless event.params.first
+            puts "=" * 50
+            puts "on 315, first event param is missing: " + event.inspect #debug
+            puts "=" * 50
+          end
+          #puts ":315 @channels=#{@channels.inspect}"          @channels[event.params[0]][:synced] = true if event.params[0][0] == 35
         when :'352' # who reply
           if name == :ShadowFire #TODO: replace hardcoded server name with IRCd check
             channel, username, hostname, server_address, nick, modes, realname = event.params
@@ -123,7 +142,9 @@ class IRC
               usr.hostname   = hostname
               usr.identified = modes.include? 'r'
               puts "User[#{nick.inspect}] identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
+              @who_requests -= 1 if usr.who_request_timer
               usr.who_request_timer.cancel if usr.who_request_timer
+              usr.who_request_timer = nil
               if usr.identified? or usr.identified_check_count >= 4
                 on_identified_update(nick)
               elsif channel and @channels.include?(channel) and not @channels[channel][:synced]
@@ -135,13 +156,15 @@ class IRC
           end
         when :'353' # names
           event.params[2].split(" ").each do |nick|
-            nick.slice!(0) if [:~, :&, :'@', :%, :+].include? nick[0, 1].to_sym
+            mode_prefix = nick.slice!(0) if @supported[:prefixes].include? nick[0, 1]
             unless User[@name].include? nick
               User.new @name, event.params[1], nick
               User[@name, nick].identified_check_count = 0
             else
               User[@name, nick].channels << event.params[1].downcase
             end
+            user_modes = (@channels[event.params[1]][:user_modes][nick] = [])
+            user_modes << @supported[:prefixes][mode_prefix] if mode_prefix
           end
         when :'366' # end of names
           request_who event.params[0]
@@ -161,12 +184,20 @@ class IRC
                 param_modes = @supported[:chanmodes].values_at(:address, :param, :prefix).join
                 param_modes << @supported[:chanmodes][:set_param] if direction == 0
                 param = param_modes.include?(mode) ? params.shift : nil
-                case mode.to_sym
-                  when :b
+                case mode
+                  when 'b'
                     if added
                       @channels[event.channel][:bans][param] = event.sender.nick
                     else
                       @channels[event.channel][:bans].delete(param)
+                    end
+                  when *@supported[:chanmodes][:prefix].split(//)
+                    if added
+                      (@channels[event.channel][:user_modes][param] ||= []) << mode
+                    else
+                      if @channels[event.channel][:user_modes][param]
+                        @channels[event.channel][:user_modes][param].delete(mode)
+                      end
                     end
                 end
               end
@@ -176,7 +207,8 @@ class IRC
           send_cmd :pong, event.target
         when :join
           if event.sender.nick == current_nick
-            @channels[event.channel] = { :synced => false, :bans => {} }
+            @channels[event.channel] = { :synced => false, :bans => {}, :user_modes => DowncasedHash.new }
+            puts ":join @channels=#{@channels.inspect}"
             send_cmd(:mode, event.channel, '+b')
           else
             unless User[@name].include? event.sender.nick
@@ -185,20 +217,28 @@ class IRC
             else
               User[@name, event.sender.nick].channels << event.channel.downcase
             end
-            EM.add_timer(0.5) { request_who(event.sender.nick) }
+            #EM.add_timer(0.5) { request_who(event.sender.nick) }
           end
         when :part
           User.remove @name, event.channel, event.sender.nick
           User.clear @name, event.channel if event.sender.nick == current_nick
+          @channels[event.channel][:user_modes].delete(nick)
         when :quit
+          User[@name, event.sender.nick].channels.each do |channel|
+            @channels[channel][:user_modes].delete(event.sender.nick)
+          end
           User.remove @name, event.sender.nick
         when :kick
+          @channels[event.channel][:user_modes].delete(event.params.first)
           User.remove @name, event.channel, event.params.first
           User.clear @name, event.channel if event.params.first == current_nick
         when :nick
           if event.sender.nick == current_nick
             current_nick = event.target
           else
+            User[@name, event.sender.nick].channels.each do |channel|
+              @channels[channel][:user_modes][event.target] = @channels[channel][:user_modes].delete(event.sender.nick)
+            end
             User[@name, event.sender.nick].identified_check_count = 0
             EM.add_timer(0.5) { request_who(event.target) }
           end
@@ -232,17 +272,14 @@ class IRC
       @connected = false
       @supported = {}
       @channels = DowncasedHash[]
-      reconnect_after_3_seconds = lambda {
-        EM.add_timer(3) { reconnect.call }
-      }
       reconnect = lambda {
         if handler = @handlers[:pre_reconnect] || @irc.handlers[:pre_reconnect]
           handler.call(@irc, Event.new(self, nil, :pre_reconnect, nil, []))
         end
-        connection.reconnect(config.address, config.port) rescue return reconnect_after_3_seconds
+        connection.reconnect(config.address, config.port) rescue return EM.add_timer(3) { reconnect.call }
         connection.post_init
       }
-      reconnect_after_3_seconds
+      EM.add_timer(3) { reconnect.call }
     end
   end
 end

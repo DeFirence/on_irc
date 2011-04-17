@@ -28,16 +28,16 @@ class IRC
       def [](server, channel_or_nick=nil)
         @@users[server] ||= DowncasedHash[]
         return @@users[server] unless channel_or_nick
-        return @@users[server][channel_or_nick] unless channel_or_nick[0] == 35
+        return @@users[server][channel_or_nick] unless channel_or_nick[0, 1] == '#'
         @@users[server].reject {|nick, usr| !usr.channels.include? channel_or_nick.downcase }
       end
 
       def remove(server, channel_or_nick, nickname=nil)
-        if nickname and @@users[server][nickname].channels.count > 1
+        if nickname and @@users[server][nickname] and @@users[server][nickname].channels.count > 1
           puts "[IRC::User] Removing #{channel_or_nick.inspect} from #{nickname.inspect}..."
           return @@users[server][nickname].channels.delete(channel_or_nick.downcase)
         end
-        nickname = channel_or_nick[0] == 35 ? nickname : channel_or_nick
+        nickname = channel_or_nick[0, 1] == '#' ? nickname : channel_or_nick
         puts "[IRC::User] Removing #{nickname.inspect}..."
         @@users[server].delete(nickname.downcase)
       end
