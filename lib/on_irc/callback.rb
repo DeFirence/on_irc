@@ -44,6 +44,14 @@ class IRC
         @event.params
       end
 
+      def channel_users
+        server.users[channel]
+      end
+
+      def channel_attributes
+        server.channels[channel]
+      end
+
       # commands
       include Commands
 
@@ -52,18 +60,26 @@ class IRC
       end
 
       def respond(*args)
-        type = args.first if args.length > 1
-        message = args.length > 1 ? args[1] : args.first
+        msgs = args
+        type, *msgs = args if args.length > 1 and [:notice, :privmsg].include? args[0]
 
-        if channel
-          reply_cmd = type || @event.server.config.channel_reply_command || :privmsg
-          send(reply_cmd, reply_cmd == :notice ? sender.nick : params[0], message)
-        else
-          send(@event.command == :notice ? :notice : :privmsg, sender.nick, message)
+        if (handler = @irc.handlers[:pre_respond] || @irc.handlers[:before_respond])
+          event = @event.dup
+          event.command, event.params = type, msgs
+          type, msgs = handler.call(@irc, event)
+          msgs = [msgs] unless msgs.is_a? Array
+        end
+
+        msgs.each do |message|
+          if channel
+            reply_cmd = type || @event.server.config.channel_reply_command || :privmsg
+            send(reply_cmd, reply_cmd == :notice ? sender.nick : params[0], message)
+          else
+            send(@event.command == :notice ? :notice : :privmsg, sender.nick, message)
+          end
         end
       end
       alias send_reply respond
     end
   end
 end
-
