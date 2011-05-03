@@ -4,7 +4,9 @@ class IRC
       prefix = ''
       command = ''
       params = []
-      msg = StringScanner.new(line)
+      ic = Iconv.new('UTF-8//IGNORE', 'UTF-8')
+      valid_line = ic.iconv(line + ' ')[0..-2]
+      msg = StringScanner.new(valid_line)
       
       if msg.peek(1) == ':'
         msg.pos += 1
