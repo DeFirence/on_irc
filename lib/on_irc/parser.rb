@@ -1,12 +1,19 @@
+begin
+  require 'iconv'
+rescue
+end
+
 class IRC
   module Parser  
     def self.parse(line)      
       prefix = ''
       command = ''
       params = []
-      ic = Iconv.new('UTF-8//IGNORE', 'UTF-8')
-      valid_line = ic.iconv(line + ' ')[0..-2]
-      msg = StringScanner.new(valid_line)
+      if const_defined? :Iconv
+        ic = ::Iconv.new('UTF-8//IGNORE', 'UTF-8')
+        line = ic.iconv(line + ' ')[0..-2]
+      end
+      msg = StringScanner.new(line)
       
       if msg.peek(1) == ':'
         msg.pos += 1
