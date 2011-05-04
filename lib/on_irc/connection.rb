@@ -8,6 +8,7 @@ class IRC
 
     ## EventMachine callbacks
     def post_init
+      start_tls if @server.ssl
       send_data("USER #{@server.ident || @server.irc.ident} * * :#{@server.realname || @server.irc.realname}\r\n")
       send_data("NICK #{@server.nick || @server.irc.nick}\r\n")
       reset_check_connection_timer
