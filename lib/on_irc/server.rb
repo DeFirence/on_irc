@@ -163,7 +163,16 @@ class IRC
             else
               User[@name, nick].channels << event.params[1].downcase
             end
-            user_modes = (@channels[event.params[1]][:user_modes][nick] = [])
+
+            unless channel = @channels[event.params[1]]
+              next warn "[on_irc] Channel does not exist: #{event.params[1].inspect}"
+            end
+
+            unless user_modes = channel[:user_modes]
+              next warn "[on_irc] Channel is missing user modes: #{channel.inspect}"
+            end
+
+            user_modes = (user_modes[nick] = [])
             user_modes << @supported[:prefixes][mode_prefix] if mode_prefix
           end
         when :'366' # end of names
@@ -192,10 +201,14 @@ class IRC
                       @channels[event.channel][:bans].delete(param)
                     end
                   when *@supported[:chanmodes][:prefix].split(//)
+                    unless channel = @channels[event.channel]
+                      next warn "[on_irc] Channel does not exist: #{event.channel}"
+                    end
+                    next warn "[on_irc] Channel has no user modes: #{event.channel}" unless channel[:user_modes]
                     if added
-                      (@channels[event.channel][:user_modes][param] ||= []) << mode
+                      (channel[:user_modes][param] ||= []) << mode
                     else
-                      if @channels[event.channel][:user_modes][param]
+                      if channel[:user_modes][param]
                         @channels[event.channel][:user_modes][param].delete(mode)
                       end
                     end

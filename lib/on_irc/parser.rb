@@ -9,10 +9,13 @@ class IRC
       prefix = ''
       command = ''
       params = []
-      if const_defined? :Iconv
-        ic = ::Iconv.new('UTF-8//IGNORE', 'UTF-8')
-        line = ic.iconv(line + ' ')[0..-2]
+
+      if RUBY_VERSION >= '1.9'
+        #TODO: add unicode support
+        line.force_encoding('ascii').encode! 'ascii', :invalid => :replace, :undef => :replace
+        line = line.chars.select(&:valid_encoding?).join
       end
+
       msg = StringScanner.new(line)
       
       if msg.peek(1) == ':'
