@@ -2,7 +2,7 @@ require File.join(File.dirname(__FILE__), '/user')
 
 class IRC
   class Server
-    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans, :supported, :channels
+    attr_accessor :config, :connection, :handlers, :name, :irc, :current_nick, :request_who, :bans, :supported, :channels, :ircd
     config_accessor :address, :port, :nick, :ident, :realname, :ssl
 
     def initialize(irc, name, config)
@@ -15,6 +15,7 @@ class IRC
       @channels = DowncasedHash[]
       @supported = {}
       @who_requests = 0
+      @whois_requests = 0
     end
 
     def connected?
@@ -87,7 +88,7 @@ class IRC
       send_cmd :who, nick_or_channel
       @who_requests += 1
       return if nick_or_channel[0, 1] == '#'
-      usr.identified_check_count += 1
+      usr.identified_check_count += 1 if ircd =~ /Unreal/
       usr.who_request_timer = EventMachine::Timer.new(7) do
         puts "[request_who] timed out waiting for reply to who for #{nick_or_channel.inspect}"
         unless usr = user[nick_or_channel]
@@ -96,10 +97,46 @@ class IRC
           next
         end
         @who_requests -= 1
+        next unless ircd =~ /Unreal/
         if usr.identified_check_count < 4
           request_who(nick_or_channel)
         else
           on_identified_update(nick_or_channel)
+        end
+      end
+    end
+
+    def request_whois(nick)
+      unless usr = user[nick]
+        return puts "[request_whois] skipping request for #{nick.inspect}"
+      end
+
+      if usr.whois_request_timer
+        usr.whois_request_timer.cancel
+        usr.whois_request_timer = nil
+      end
+      if @whois_requests >= 5
+        puts "[request_whois] too many requests in progress, delaying whois for #{nick.inspect} by 5 seconds"
+        return usr.whois_request_timer = EventMachine::Timer.new(5) { request_whois(nick) }
+      end
+
+      send_cmd :whois, nick
+      @whois_requests += 1
+
+      usr.identified_check_count += 1 if ircd =~ /ircd-seven/
+      usr.whois_request_timer = EventMachine::Timer.new(7) do
+        puts "[request_whois] timed out waiting for reply to whois for #{nick.inspect}"
+        unless usr = user[nick]
+          @whois_requests -= 1
+          puts "[request_whois_timeout] skipping handling because #{nick.inspect} no longer exists"
+          next
+        end
+        @whois_requests -= 1
+        next unless ircd =~ /ircd-seven/
+        if usr.identified_check_count < 4
+          request_whois(nick)
+        else
+          on_identified_update(nick)
         end
       end
     end
@@ -110,6 +147,8 @@ class IRC
           @connected = true
           @connect_time = Time.now
           @irc.handlers[:connected].call(@irc, event) if @irc.handlers[:connected]
+        when :'004'
+          @ircd = event.params[1]
         when :'005' # supported modes
           @supported[:chanmodes] ||= {}
           event.params[0..-2].collect {|p| s = p.split('='); [s[0], s[1] || true]}.each do |param, value|
@@ -134,34 +173,40 @@ class IRC
             puts "=" * 50
           end
           #puts ":315 @channels=#{@channels.inspect}"          @channels[event.params[0]][:synced] = true if event.params[0][0] == 35
+        when :'318' # end of whois
+          return unless user[nick]
+          on_identified_update(event.params.first) unless ircd =~ /Unreal/
+        when :'330' # whois account
+          return unless usr = user[event.params.first]
+          usr.identified_as = event.params.second
+          usr.identified = true
         when :'352' # who reply
-          if name == :ShadowFire #TODO: replace hardcoded server name with IRCd check
-            channel, username, hostname, server_address, nick, modes, realname = event.params
-            if usr = user[nick]
-              usr.ident      = username
-              usr.hostname   = hostname
-              usr.identified = modes.include? 'r'
-              puts "User[#{nick.inspect}] identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
-              @who_requests -= 1 if usr.who_request_timer
-              usr.who_request_timer.cancel if usr.who_request_timer
-              usr.who_request_timer = nil
-              if usr.identified? or usr.identified_check_count >= 4
-                on_identified_update(nick)
-              elsif channel and @channels.include?(channel) and not @channels[channel][:synced]
-                on_identified_update(nick)
-              else
-                EM.add_timer(0.5) { request_who(nick) }
-              end
+          channel, username, hostname, server_address, nick, modes, realname = event.params
+          if usr = user[nick]
+            usr.ident      = username
+            usr.hostname   = hostname
+            usr.identified = modes.include? 'r' if ircd =~ /Unreal/
+            puts "User[#{nick.inspect}] identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
+            @who_requests -= 1 if usr.who_request_timer
+            usr.who_request_timer.cancel if usr.who_request_timer
+            usr.who_request_timer = nil
+            return unless ircd =~ /Unreal/
+            if usr.identified? or usr.identified_check_count >= 4
+              on_identified_update(nick)
+            elsif channel and @channels.include?(channel) and not @channels[channel][:synced]
+              on_identified_update(nick)
+            else
+              EM.add_timer(0.5) { request_who(nick) }
             end
           end
         when :'353' # names
           event.params[2].split(" ").each do |nick|
             mode_prefix = nick.slice!(0) if @supported[:prefixes].include? nick[0, 1]
-            unless User[@name].include? nick
+            unless user.include? nick
               User.new @name, event.params[1], nick
-              User[@name, nick].identified_check_count = 0
+              user[nick].identified_check_count = 0
             else
-              User[@name, nick].channels << event.params[1].downcase
+              user[nick].channels << event.params[1].downcase
             end
 
             unless channel = @channels[event.params[1]]
@@ -222,7 +267,7 @@ class IRC
           if event.sender.nick == current_nick
             @channels[event.channel] = { :synced => false, :bans => {}, :user_modes => DowncasedHash.new }
             puts ":join @channels=#{@channels.inspect}"
-            send_cmd(:mode, event.channel, '+b')
+            send_cmd :mode, event.channel, '+b'
           else
             unless User[@name].include? event.sender.nick
               User.new @name, event.channel, event.sender.nick
@@ -253,7 +298,10 @@ class IRC
               @channels[channel][:user_modes][event.target] = @channels[channel][:user_modes].delete(event.sender.nick)
             end
             User[@name, event.sender.nick].identified_check_count = 0
-            EM.add_timer(0.5) { request_who(event.target) }
+            EM.add_timer(0.5) do
+              request_who(event.target)
+              request_whois(event.target) if ircd =~ /ircd-seven/
+            end
           end
           User[@name, event.sender.nick].nickname = event.target
       end
