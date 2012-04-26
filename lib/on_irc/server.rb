@@ -15,7 +15,7 @@ class IRC
       @channels = DowncasedHash[]
       @supported = {}
       @who_requests = 0
-      @whois_requests = 0
+      @reconnect = true
     end
 
     def connected?
@@ -44,7 +44,7 @@ class IRC
       # prepend last arg with : only if it exists. it's really ugly
       args[-1] = ":#{args[-1]}" if args[-1]
       connection.send_data(cmd.to_s.upcase + ' ' + args.join(' ') + "\r\n")
-      puts "#{@name} <- #{cmd.to_s.upcase} #{args.join(' ')}"
+      puts "#{@name} <- #{cmd.to_s.upcase} #{args.join(' ')}".send(Object.const_defined?(:Colorize) ? :light_blue : :to_s) #TODO: move out of irc lib
     end
 
     # basic IRC commands
@@ -80,12 +80,12 @@ class IRC
           usr.who_request_timer.cancel                            #TODO: when too many who_requests are queued (possible netsplit rejoin)
           usr.who_request_timer = nil                             #      stop individual requests and make a channel who request while
         end                                                       #      preserving individual user callbacks
-        if @who_requests >= 5
+        if @who_requests >= 8
           puts "[request_who] too many requests in progress, delaying who for #{nick_or_channel.inspect} by 5 seconds"
           return usr.who_request_timer = EventMachine::Timer.new(5) { request_who(nick_or_channel) }
         end
       end
-      send_cmd :who, nick_or_channel
+      send_cmd :who, nick_or_channel, '%uhna' # extwho support
       @who_requests += 1
       return if nick_or_channel[0, 1] == '#'
       usr.identified_check_count += 1 if ircd =~ /Unreal/
@@ -102,6 +102,7 @@ class IRC
           request_who(nick_or_channel)
         else
           on_identified_update(nick_or_channel)
+          usr.identified_check_count = 1
         end
       end
     end
@@ -115,23 +116,23 @@ class IRC
         usr.whois_request_timer.cancel
         usr.whois_request_timer = nil
       end
-      if @whois_requests >= 5
+      if @who_requests >= 8
         puts "[request_whois] too many requests in progress, delaying whois for #{nick.inspect} by 5 seconds"
         return usr.whois_request_timer = EventMachine::Timer.new(5) { request_whois(nick) }
       end
 
       send_cmd :whois, nick
-      @whois_requests += 1
+      @who_requests += 1
 
       usr.identified_check_count += 1 if ircd =~ /ircd-seven/
       usr.whois_request_timer = EventMachine::Timer.new(7) do
         puts "[request_whois] timed out waiting for reply to whois for #{nick.inspect}"
         unless usr = user[nick]
-          @whois_requests -= 1
+          @who_requests -= 1
           puts "[request_whois_timeout] skipping handling because #{nick.inspect} no longer exists"
           next
         end
-        @whois_requests -= 1
+        @who_requests -= 1
         next unless ircd =~ /ircd-seven/
         if usr.identified_check_count < 4
           request_whois(nick)
@@ -166,31 +167,61 @@ class IRC
                 @supported[param.downcase.to_sym] = Float(value) rescue value
             end
           end
-        when :'315'
-          unless event.params.first
-            puts "=" * 50
-            puts "on 315, first event param is missing: " + event.inspect #debug
-            puts "=" * 50
+        when :'311' # start of whois
+          return unless usr = user[event.params[0]]
+          if ircd =~ /ircd-seven/
+            usr.identified_as = nil
+            usr.identified = false
           end
+        when :'315' # end of who
+          return unless nick = event.params[0]
+          #if usr = user[nick]
+          #  usr.identified = modes.include? 'r' if ircd =~ /Unreal/
+          #  @who_requests -= 1 if usr.who_request_timer
+          #  usr.who_request_timer.cancel if usr.who_request_timer
+          #  usr.who_request_timer = nil
+          #  return unless ircd =~ /Unreal/
+          #  puts "[end_of_who] #{nick.inspect}: identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
+          #  if usr.identified? or usr.identified_check_count >= 4
+          #    on_identified_update(nick)
+          #  elsif channel and @channels.include?(channel) and not @channels[channel][:synced]
+          #    on_identified_update(nick)
+          #  else
+          #    EM.add_timer(0.5) { request_who(nick) }
+          #  end
+          #end
           #puts ":315 @channels=#{@channels.inspect}"          @channels[event.params[0]][:synced] = true if event.params[0][0] == 35
         when :'318' # end of whois
-          return unless user[nick]
-          on_identified_update(event.params.first) unless ircd =~ /Unreal/
+          if usr = user[event.params[0]]
+            puts "[#{event.params[0].inspect}] identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
+            @who_requests -= 1 if usr.whois_request_timer
+            usr.whois_request_timer.cancel if usr.whois_request_timer
+            usr.whois_request_timer = nil
+            if ircd =~ /ircd-seven/
+              if usr.identified? or usr.identified_check_count >= 4
+                on_identified_update(event.params[0])
+              else
+                EM.add_timer(0.5) { request_whois(event.params[0]) }
+              end
+            end
+          end
         when :'330' # whois account
-          return unless usr = user[event.params.first]
-          usr.identified_as = event.params.second
-          usr.identified = true
+          return unless usr = user[event.params[0]]
+          if ircd =~ /ircd-seven/
+            usr.identified_as = event.params[1]
+            usr.identified = true
+          end
         when :'352' # who reply
           channel, username, hostname, server_address, nick, modes, realname = event.params
           if usr = user[nick]
             usr.ident      = username
             usr.hostname   = hostname
-            usr.identified = modes.include? 'r' if ircd =~ /Unreal/
-            puts "User[#{nick.inspect}] identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
+            usr.identified = modes.include? 'r'# if ircd =~ /Unreal/
             @who_requests -= 1 if usr.who_request_timer
             usr.who_request_timer.cancel if usr.who_request_timer
             usr.who_request_timer = nil
-            return unless ircd =~ /Unreal/
+            #return unless ircd =~ /Unreal/
+            puts "[who_reply] #{nick.inspect}: identified? #{usr.identified?} identified_check_count=#{usr.identified_check_count.inspect} time_since_join=#{usr.time_since_join.inspect}"
             if usr.identified? or usr.identified_check_count >= 4
               on_identified_update(nick)
             elsif channel and @channels.include?(channel) and not @channels[channel][:synced]
@@ -219,6 +250,13 @@ class IRC
 
             user_modes = (user_modes[nick] = [])
             user_modes << @supported[:prefixes][mode_prefix] if mode_prefix
+          end
+        when :'354' # extwho
+          username, hostname, nick, account = event.params
+          if usr = user[nick]
+            usr.ident        = username
+            usr.hostname     = hostname
+            usr.identifed_as = account
           end
         when :'366' # end of names
           request_who event.params[0]
@@ -287,9 +325,9 @@ class IRC
           end
           User.remove @name, event.sender.nick
         when :kick
-          @channels[event.channel][:user_modes].delete(event.params.first)
-          User.remove @name, event.channel, event.params.first
-          User.clear @name, event.channel if event.params.first == current_nick
+          @channels[event.channel][:user_modes].delete(event.params[0])
+          User.remove @name, event.channel, event.params[0]
+          User.clear @name, event.channel if event.params[0] == current_nick
         when :nick
           if event.sender.nick == current_nick
             current_nick = event.target
@@ -319,6 +357,12 @@ class IRC
       end
     end
 
+    def disconnect(message=nil)
+      send_cmd(:quit, message) if message && connected?
+      @reconnect = false
+      connection.close_connection(true)
+    end
+
     # Eventmachine callbacks
     def receive_line(line)
       parsed_line = Parser.parse(line)
@@ -334,13 +378,14 @@ class IRC
       @supported = {}
       @channels = DowncasedHash[]
       reconnect = lambda {
+        next unless @reconnect
         if handler = @handlers[:pre_reconnect] || @irc.handlers[:pre_reconnect]
           handler.call(@irc, Event.new(self, nil, :pre_reconnect, nil, []))
         end
         connection.reconnect(config.address, config.port) rescue return EM.add_timer(3) { reconnect.call }
         connection.post_init
       }
-      EM.add_timer(3) { reconnect.call }
+      EM.add_timer(3) { reconnect.call } if @reconnect
     end
   end
 end

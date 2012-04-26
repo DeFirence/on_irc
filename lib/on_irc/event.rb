@@ -10,7 +10,7 @@ class IRC
       end
       @command = command
       @target = target
-      @channel = target if target and target[0, 1] == '#'
+      @channel = target if target and target.start_with? '#'
       @params = params
     end
 

@@ -45,7 +45,7 @@ class IRC
       end
 
       def channel_users
-        server.users[channel]
+        server.users(channel)
       end
 
       def channel_attributes
